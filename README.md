@@ -2,6 +2,12 @@
 
 Multi-thread paste for linux
 
+## DEPENDENCE
+
+- [GNU paste](https://www.gnu.org/software/screen/manual/html_node/Paste.html)
+- [GNU parallel](https://www.gnu.org/software/parallel/)
+- [easy_bash](https://github.com/songtaogui/easy_bash)
+
 ## INSTALL
 
 mpaste is a bash script, so it should be worked by just download and put in PATH
