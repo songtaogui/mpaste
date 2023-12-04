@@ -1,6 +1,6 @@
 # mpaste
 
-Multi-thread paste for linux
+Multi-thread paste for LARGE NUMBER of files in linux.
 
 ## DEPENDENCE
 
