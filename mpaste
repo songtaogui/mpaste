@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Songtao Gui
+
+# set -o xtrace
+# set -o errexit
+set -o nounset
+set -o pipefail
+
+# >>>>>>>>>>>>>>>>>>>>>>>> Load Common functions >>>>>>>>>>>>>>>>>>>>>>>>
+export quiet=FALSE
+export verbose=FALSE
+source $EASYBASH/lib/common.sh
+if [ $? -ne 0 ];then 
+    echo -e "\033[31m\033[7m[ERROR]\033[0m --> Cannot load common functions from easybash lib: $EASYBASH" >&2
+    echo -e "Try to install easy_bash from https://github.com/songtaogui/easy_bash" >$2
+    exit 1;
+fi
+# gst_rcd "Common functions loaded"
+# <<<<<<<<<<<<<<<<<<<<<<<< Common functions <<<<<<<<<<<<<<<<<<<<<<<<
+
+usage=$(
+cat <<EOF
+------------------------------------------------------------
+Parallel paste for large number of files
+------------------------------------------------------------
+Dependence:
+- GNU paste;
+- GNU parallel;
+- easy_bash (https://github.com/songtaogui/easy_bash)
+------------------------------------------------------------
+USAGE:
+    bash $(basename $0) [OPTIONS] [wildcard_files...]
+
+OPTIONS: ([R]:required  [O]:optional)
+    -h, --help                          show help and exit.
+    -t, --threads       <num>   [O]     set threads (default: 2)
+    -o, --out           <file>  [O]     output to a file, default: to stdout
+    -d, --delimiter     <str>   [O]     reuse character from LIST instead of TABs
+    -l, --list          <file>  [O]     paste from list of files
+    -m, --max           <num>   [O]     max files to paste per threads, default: 1000
+    --header           <regex>  [O]     Modify the file name according to the regex (perl)
+                                        as the header of the output, eg:
+                                            --header 's/.*/_AAA/'
+                                            --header 's#.*/##'
+                                        use empty char for not modify:
+                                            --header ''
+    -v, --verbose                       be verbose, output detailed logs
+------------------------------------------------------------
+Author: Songtao Gui
+E-mail: songtaogui@sina.com
+
+EOF
+)
+if [[ $# -eq 0 ]]; then
+    echo "$usage" >&2
+    exit 1
+fi
+
+# >>>>>>>>>>>>>>>>>>>>>>>> Parse Options >>>>>>>>>>>>>>>>>>>>>>>>
+# Set Default Opt
+export threads=2
+export delim="\t"
+export out=""
+export list=""
+export max=1000
+export header=FALSE
+export hdreg=""
+export wklist=$(mktemp)
+# parse args
+UNKOWN_ARGS=()
+while [[ $# > 0 ]]; do
+    case "$1" in
+        -h|--help) echo "$usage" >&2; exit 1 ;;
+        -t|--threads) threads=$2; shift 2 ;;
+        -o|--out) out=$2; shift 2 ;;
+        -d|--delimiter) delim=$2; shift 2 ;;
+        -l|--list)
+            list=$2;
+            check_files_exists $list;
+            shift 2
+        ;;
+        -m|--max) max=$2; shift 2 ;;
+        --header)
+            header=TRUE;
+            hdreg=$2;
+            check_var_regex hdreg '^$|^s' "Should be either empty or regex in perl substitute gramma"
+            shift 2 ;;
+        --quiet) quiet=TRUE; verbose=FALSE; shift 1 ;;
+        -v|--verbose) verbose=TRUE; quiet=FALSE; shift 1 ;;
+        -*) UNKOWN_ARGS+=("$1"); shift ;;
+        *) echo $1 >> $wklist; shift ;;
+    esac
+done
+if [ "${#UNKOWN_ARGS[@]}" -gt 0 ];then
+    echo "[ERROR] --> Wrong options: \"${UNKOWN_ARGS[@]}\"" >&2
+    exit 1
+fi
+unset UNKOWN_ARGS # restore UNKOWN_ARGS params
+# ! Check if required vars are legal
+check_sftw_path paste parallel
+check_var_regex delim '^\\?.?$' "Should contain at most ONE character!"
+check_var_numeric max threads
+if [ -s "$list" ];then
+    gst_rcd "Load files from list: $list"
+    wklist=$list;
+fi
+if [ ! -s "$wklist" ];then
+    gst_erre "No input files to paste!"
+fi
+# <<<<<<<<<<<<<<<<<<<<<<<< Parse Options <<<<<<<<<<<<<<<<<<<<<<<<
+
+ppaste () {
+    if [[ $# -lt 1 ]];then
+        gst_err "Wrong number of files ($#)! Needs at least one!"
+        return 1
+    fi
+    case $# in
+     1|2) paste -d "$delim" "$@";;
+     *) local first=$1
+        shift
+        gst_rcd "Dealing with $first ..."
+        paste -d "$delim" "$first" <(ppaste "$@");;
+    esac
+}
+export -f ppaste
+
+fpaste () {
+    local list=$1
+    local out=$list.FPASTEOUT
+    ppaste $(cat $list) > $out
+    if [ $? -ne 0 ];then gst_err "fpaste for $list failed: Non-zero exit"; exit 1;fi
+}
+export -f fpaste
+
+main () {
+    local wkpip=$(mktemp MPASTE.XXXXXXX.)
+    local logopt=""
+    if [[ "$verbose" == "TRUE" ]];then
+        logopt="--progress"
+    fi
+    # get work pipe
+    gst_rcd "workpipe: $wkpip"
+    split --additional-suffix=".PASTELIST" \
+        -l $(( ($(cat $wklist | wc -l) + $threads - 1)/$threads )) \
+        $wklist $wkpip
+    if [ $? -ne 0 ];then gst_err "split into $threads parts failed: Non-zero exit"; exit 1;fi
+    gst_rcd "Seperate jobs into $threads parts: \n$(ls ${wkpip}*.PASTELIST)"
+    gst_rcd "Parallel paste each part ..."
+    parallel $logopt --jobs $threads -k -q fpaste :::: <(ls ${wkpip}*.PASTELIST) &&\
+    gst_rcd "Final round of PASTE ..."
+    ppaste ${wkpip}*.FPASTEOUT &&\
+    rm -f ${wkpip}* &&\
+    gst_rcd "ALL DONE!"
+    if [ $? -ne 0 ];then gst_err "mpaste failed: Non-zero exit"; exit 1;fi
+}
+export -f main
+
+# >>>>>>>>>>>>>>>>>>>>>>>> MAIN >>>>>>>>>>>>>>>>>>>>>>>>
+if [[ -n "${out}" ]]; then
+    gst_rcd "output to $out"
+    if [[ "$header" == "TRUE" ]];then
+        gst_rcd "Using [file names ~ '$hdreg'] as output header: "
+        gstcat $wklist | perl -p -e "$hdreg;s/\n/$delim/g unless eof" > $out
+        main >> $out
+    else
+        main > $out
+    fi
+else
+    gst_rcd "output to STDOUT"
+    if [[ "$header" == "TRUE" ]];then
+        gst_rcd "Using [file names ~ '$hdreg'] as output header"
+        gstcat $wklist | perl -p -e "$hdreg;s/\n/$delim/g unless eof"
+    fi
+    main
+fi
+# <<<<<<<<<<<<<<<<<<<<<<<< MAIN <<<<<<<<<<<<<<<<<<<<<<<<
+
